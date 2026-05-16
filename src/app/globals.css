@@ -1,0 +1,79 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #0a0a0a;
+  --color-foreground: #ededed;
+  --color-neon-cyan: #06b6d4;
+  --color-neon-blue: #3b82f6;
+  --color-dark-surface: #0f172a;
+  --color-dark-elevated: #1e293b;
+  --color-glass-surface: rgba(255, 255, 255, 0.05);
+  --color-glass-border: rgba(255, 255, 255, 0.1);
+  --color-cyber-grid: rgba(6, 182, 212, 0.15);
+
+  --font-sans: var(--font-inter);
+}
+
+:root {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom Utilities */
+.glass-panel {
+  @apply bg-[var(--color-glass-surface)] backdrop-blur-md border border-[var(--color-glass-border)];
+}
+
+.neon-text-cyan {
+  @apply text-neon-cyan drop-shadow-[0_0_8px_rgba(6,182,212,0.8)];
+}
+
+.neon-text-blue {
+  @apply text-neon-blue drop-shadow-[0_0_8px_rgba(59,130,246,0.8)];
+}
+
+.neon-border-cyan {
+  @apply border border-neon-cyan shadow-[0_0_10px_rgba(6,182,212,0.5)];
+}
+
+.neon-border-blue {
+  @apply border border-neon-blue shadow-[0_0_10px_rgba(59,130,246,0.5)];
+}
+
+/* Scrollbar styling for a cyberpunk feel */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b82f6;
+}
+
+@keyframes grid-movement {
+  0% { background-position: 0px 0px; }
+  100% { background-position: 50px 50px; }
+}
+.bg-grid-animated {
+  animation: grid-movement 4s linear infinite;
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 0.2; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.05); }
+}
+.animate-pulse-slow {
+  animation: pulse-slow 6s ease-in-out infinite;
+}
