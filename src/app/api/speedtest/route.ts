@@ -1,10 +1,27 @@
 import { NextResponse } from 'next/server';
-import { webcrypto } from 'crypto';
-
-const cryptoObj = (globalThis.crypto as any) || webcrypto;
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// Using edge runtime is ideal for streaming to avoid Vercel's Node.js response limits/buffering
+export const runtime = 'edge';
+
+// Pre-generate a 1MB buffer of random data ONCE to avoid severe CPU bottleneck during streaming.
+// Generating random bytes inside the stream loop artificially limits the download speed to the server's CPU speed.
+const CHUNK_SIZE = 1024 * 1024; // 1MB
+const randomBuffer = new Uint8Array(CHUNK_SIZE);
+
+// In Edge runtime, globalThis.crypto is available
+if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+  const quota = 65536;
+  for (let i = 0; i < CHUNK_SIZE; i += quota) {
+    const len = Math.min(quota, CHUNK_SIZE - i);
+    crypto.getRandomValues(randomBuffer.subarray(i, i + len));
+  }
+} else {
+  // Fallback
+  for (let i = 0; i < CHUNK_SIZE; i++) {
+    randomBuffer[i] = Math.floor(Math.random() * 256);
+  }
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -17,29 +34,21 @@ export async function GET(request: Request) {
   const stream = new ReadableStream({
     async start(controller) {
       let sent = 0;
-      const chunkSize = 1024 * 1024; // 1MB
-      const buffer = new Uint8Array(chunkSize);
-      const quota = 65536; // 64KB limit for getRandomValues
 
       while (sent < safeSize) {
         const remaining = safeSize - sent;
-        const toSend = Math.min(chunkSize, remaining);
+        const toSend = Math.min(CHUNK_SIZE, remaining);
         
-        // Fill buffer in chunks to avoid QuotaExceededError (64KB limit)
-        for (let i = 0; i < toSend; i += quota) {
-          const len = Math.min(quota, toSend - i);
-          cryptoObj.getRandomValues(buffer.subarray(i, i + len));
-        }
-        
-        if (toSend === chunkSize) {
-          controller.enqueue(new Uint8Array(buffer));
+        if (toSend === CHUNK_SIZE) {
+          controller.enqueue(randomBuffer);
         } else {
-          controller.enqueue(buffer.slice(0, toSend));
+          controller.enqueue(randomBuffer.slice(0, toSend));
         }
         
         sent += toSend;
         
-        if (sent % (chunkSize * 8) === 0) {
+        // Yield to the event loop occasionally to avoid blocking completely
+        if (sent % (CHUNK_SIZE * 5) === 0) {
             await new Promise(r => setTimeout(r, 0));
         }
       }
