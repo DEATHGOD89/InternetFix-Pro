@@ -265,6 +265,7 @@
         const uploadEl = document.getElementById('uploadValue');
 
         const CIRCUMFERENCE = 2 * Math.PI * 100;
+        const TEST_DURATION = 5000; // 5 seconds per test
 
         function updateGauge(value, max = 1000) {
             const percent = Math.min(value / max, 1);
@@ -282,7 +283,7 @@
 
         async function runPingTest() {
             const times = [];
-            for (let i = 0; i < 5; i++) {
+            for (let i = 0; i < 10; i++) { // More samples for better accuracy
                 const start = performance.now();
                 try {
                     await fetch(`${window.location.href}?_ping=${Date.now()}`, { 
@@ -294,75 +295,106 @@
                 } catch (e) {
                     times.push(performance.now() - start);
                 }
+                // Small delay between pings
+                await new Promise(r => setTimeout(r, 50));
             }
 
-            // Ping: average middle 3
             const sorted = [...times].sort((a, b) => a - b);
-            const middle3 = sorted.slice(1, 4);
-            const avgPing = middle3.reduce((a, b) => a + b, 0) / 3;
+            const middleSamples = sorted.slice(2, -2); // Drop 2 fastest, 2 slowest
+            const avgPing = middleSamples.reduce((a, b) => a + b, 0) / middleSamples.length;
 
-            // Jitter: std-dev of all 5
-            const mean = times.reduce((a, b) => a + b, 0) / 5;
-            const variance = times.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / 5;
-            const jitter = Math.sqrt(variance);
+            const mean = times.reduce((a, b) => a + b, 0) / times.length;
+            const jitter = Math.sqrt(times.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / times.length);
 
             return { ping: avgPing, jitter: jitter };
         }
 
         async function runDownloadTest() {
-            const results = [];
-            const sizes = [1024 * 1024 * 1, 1024 * 1024 * 5, 1024 * 1024 * 10]; // 1MB, 5MB, 10MB
+            let totalBytes = 0;
+            const startTime = performance.now();
+            let lastUpdate = startTime;
+            const downloadUrl = '/speedtest/25mb.bin'; // Use the actual server asset
+            
+            // Fallback to fetching current page if asset is missing
+            const fallbackUrl = `${window.location.href}?_dl=${Date.now()}`;
+            let activeUrl = downloadUrl;
 
-            for (let i = 0; i < 3; i++) {
-                const size = sizes[i];
-                const data = new Uint8Array(size);
-                crypto.getRandomValues(data);
-                const blob = new Blob([data], { type: 'application/octet-stream' });
-                const url = URL.createObjectURL(blob);
-
-                const start = performance.now();
-                const response = await fetch(url, { cache: 'no-store' });
-                await response.blob();
-                const end = performance.now();
-                
-                URL.revokeObjectURL(url);
-
-                const seconds = (end - start) / 1000;
-                const mbps = (size * 8) / seconds / 1_000_000;
-                results.push(mbps);
-                updateGauge(mbps, 1000);
+            // Check if 25mb.bin exists, else use fallback
+            try {
+                const check = await fetch(downloadUrl, { method: 'HEAD' });
+                if (!check.ok) activeUrl = fallbackUrl;
+            } catch (e) {
+                activeUrl = fallbackUrl;
             }
 
-            results.sort((a, b) => a - b);
-            return results[1]; // Median
+            while (performance.now() - startTime < TEST_DURATION) {
+                const response = await fetch(`${activeUrl}&t=${Date.now()}`, { cache: 'no-store' });
+                const reader = response.body.getReader();
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    totalBytes += value.length;
+                    const now = performance.now();
+                    
+                    if (now - lastUpdate > 100) { // Update UI every 100ms
+                        const elapsed = (now - startTime) / 1000;
+                        const currentMbps = (totalBytes * 8) / elapsed / 1_000_000;
+                        updateGauge(currentMbps, 1000);
+                        lastUpdate = now;
+                    }
+
+                    if (now - startTime >= TEST_DURATION) {
+                        reader.cancel();
+                        break;
+                    }
+                }
+            }
+
+            const finalElapsed = (performance.now() - startTime) / 1000;
+            return (totalBytes * 8) / finalElapsed / 1_000_000;
         }
 
         async function runUploadTest() {
-            const size = 1024 * 1024 * 2; // 2MB
-            const data = new Uint8Array(size);
+            let totalBytes = 0;
+            const startTime = performance.now();
+            let lastUpdate = startTime;
+            const chunkSize = 512 * 1024; // 512KB chunks for steady upload
+            const data = new Uint8Array(chunkSize);
             crypto.getRandomValues(data);
 
-            const start = performance.now();
-            try {
-                await fetch(`${window.location.href}?_upload=${Date.now()}`, {
-                    method: 'POST',
-                    body: data,
-                    cache: 'no-store',
-                    mode: 'no-cors'
-                });
-            } catch (e) {
-                // Ignore error, we only care about the time to send
+            while (performance.now() - startTime < TEST_DURATION) {
+                try {
+                    await fetch(`${window.location.href}?_upload=${Date.now()}`, {
+                        method: 'POST',
+                        body: data,
+                        cache: 'no-store',
+                        mode: 'no-cors'
+                    });
+                    totalBytes += chunkSize;
+                    
+                    const now = performance.now();
+                    if (now - lastUpdate > 100) {
+                        const elapsed = (now - startTime) / 1000;
+                        const currentMbps = (totalBytes * 8) / elapsed / 1_000_000;
+                        updateGauge(currentMbps, 500); // Usually upload is slower
+                        lastUpdate = now;
+                    }
+                } catch (e) {
+                    // Even if it 404s, the data was sent
+                    totalBytes += chunkSize;
+                }
             }
-            const end = performance.now();
 
-            const seconds = (end - start) / 1000;
-            return (size * 8) / seconds / 1_000_000;
+            const finalElapsed = (performance.now() - startTime) / 1000;
+            return (totalBytes * 8) / finalElapsed / 1_000_000;
         }
 
         startBtn.addEventListener('click', async () => {
             startBtn.disabled = true;
             startBtn.classList.add('testing');
-            verdictText.textContent = "Testing Ping...";
+            startBtn.textContent = "Testing...";
             
             // Reset UI
             pingEl.textContent = "-";
@@ -372,27 +404,31 @@
             updateGauge(0);
 
             // 1. Ping
+            verdictText.textContent = "Checking Latency...";
             const { ping, jitter } = await runPingTest();
             pingEl.textContent = `${ping.toFixed(1)} ms`;
             jitterEl.textContent = `${jitter.toFixed(1)} ms`;
 
             // 2. Download
-            verdictText.textContent = "Testing Download...";
+            verdictText.textContent = "Measuring Download...";
             const dlSpeed = await runDownloadTest();
             downloadEl.textContent = `${dlSpeed.toFixed(1)} Mbps`;
             updateGauge(dlSpeed, 1000);
             setVerdict(dlSpeed);
 
             // 3. Upload
-            verdictText.textContent = "Testing Upload...";
+            verdictText.textContent = "Measuring Upload...";
             const ulSpeed = await runUploadTest();
             uploadEl.textContent = `${ulSpeed.toFixed(1)} Mbps`;
+            updateGauge(ulSpeed, 500);
 
             // Done
+            verdictText.textContent = "Test Complete";
             startBtn.disabled = false;
             startBtn.classList.remove('testing');
             startBtn.textContent = "Run Again";
         });
     </script>
+
 </body>
 </html>
