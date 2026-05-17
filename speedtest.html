@@ -265,7 +265,6 @@
         const uploadEl = document.getElementById('uploadValue');
 
         const CIRCUMFERENCE = 2 * Math.PI * 100;
-        const TEST_DURATION = 5000; // 5 seconds per test
 
         function updateGauge(value, max = 1000) {
             const percent = Math.min(value / max, 1);
@@ -281,154 +280,159 @@
             else verdictText.textContent = "Excellent — fiber-tier speed";
         }
 
-        async function runPingTest() {
-            const times = [];
-            for (let i = 0; i < 10; i++) { // More samples for better accuracy
-                const start = performance.now();
-                try {
-                    await fetch(`${window.location.href}?_ping=${Date.now()}`, { 
-                        method: 'HEAD', 
-                        cache: 'no-store',
-                        mode: 'no-cors'
-                    });
-                    times.push(performance.now() - start);
-                } catch (e) {
-                    times.push(performance.now() - start);
-                }
-                // Small delay between pings
-                await new Promise(r => setTimeout(r, 50));
-            }
+        // Web Worker Script (Embedded)
+        const workerCode = `
+            self.onmessage = async (e) => {
+                const { type, url, duration } = e.data;
 
-            const sorted = [...times].sort((a, b) => a - b);
-            const middleSamples = sorted.slice(2, -2); // Drop 2 fastest, 2 slowest
-            const avgPing = middleSamples.reduce((a, b) => a + b, 0) / middleSamples.length;
-
-            const mean = times.reduce((a, b) => a + b, 0) / times.length;
-            const jitter = Math.sqrt(times.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / times.length);
-
-            return { ping: avgPing, jitter: jitter };
-        }
-
-        async function runDownloadTest() {
-            let totalBytes = 0;
-            const startTime = performance.now();
-            let lastUpdate = startTime;
-            const downloadUrl = '/speedtest/25mb.bin'; // Use the actual server asset
-            
-            // Fallback to fetching current page if asset is missing
-            const fallbackUrl = `${window.location.href}?_dl=${Date.now()}`;
-            let activeUrl = downloadUrl;
-
-            // Check if 25mb.bin exists, else use fallback
-            try {
-                const check = await fetch(downloadUrl, { method: 'HEAD' });
-                if (!check.ok) activeUrl = fallbackUrl;
-            } catch (e) {
-                activeUrl = fallbackUrl;
-            }
-
-            while (performance.now() - startTime < TEST_DURATION) {
-                const response = await fetch(`${activeUrl}&t=${Date.now()}`, { cache: 'no-store' });
-                const reader = response.body.getReader();
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    
-                    totalBytes += value.length;
-                    const now = performance.now();
-                    
-                    if (now - lastUpdate > 100) { // Update UI every 100ms
-                        const elapsed = (now - startTime) / 1000;
-                        const currentMbps = (totalBytes * 8) / elapsed / 1_000_000;
-                        updateGauge(currentMbps, 1000);
-                        lastUpdate = now;
+                if (type === 'ping') {
+                    const times = [];
+                    for (let i = 0; i < 10; i++) {
+                        const start = performance.now();
+                        try {
+                            await fetch(url + '?_p=' + Date.now(), { method: 'HEAD', cache: 'no-store', mode: 'no-cors' });
+                            times.push(performance.now() - start);
+                        } catch (err) { times.push(performance.now() - start); }
+                        await new Promise(r => setTimeout(r, 50));
                     }
-
-                    if (now - startTime >= TEST_DURATION) {
-                        reader.cancel();
-                        break;
-                    }
+                    self.postMessage({ type: 'pingResult', times });
                 }
-            }
 
-            const finalElapsed = (performance.now() - startTime) / 1000;
-            return (totalBytes * 8) / finalElapsed / 1_000_000;
-        }
+                if (type === 'download') {
+                    const streams = 3;
+                    let totalBytes = 0;
+                    const startTime = performance.now();
+                    const samples = [];
 
-        async function runUploadTest() {
-            let totalBytes = 0;
-            const startTime = performance.now();
-            let lastUpdate = startTime;
-            const chunkSize = 512 * 1024; // 512KB chunks for steady upload
-            const data = new Uint8Array(chunkSize);
-            crypto.getRandomValues(data);
+                    const runStream = async () => {
+                        while (performance.now() - startTime < duration) {
+                            try {
+                                const response = await fetch(url + '?_d=' + Date.now() + '&s=' + Math.random(), { cache: 'no-store' });
+                                const reader = response.body.getReader();
+                                while (true) {
+                                    const { done, value } = await reader.read();
+                                    if (done) break;
+                                    totalBytes += value.length;
+                                    if (performance.now() - startTime >= duration) {
+                                        reader.cancel();
+                                        break;
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    };
 
-            while (performance.now() - startTime < TEST_DURATION) {
-                try {
-                    await fetch(`${window.location.href}?_upload=${Date.now()}`, {
-                        method: 'POST',
-                        body: data,
-                        cache: 'no-store',
-                        mode: 'no-cors'
-                    });
-                    totalBytes += chunkSize;
-                    
-                    const now = performance.now();
-                    if (now - lastUpdate > 100) {
-                        const elapsed = (now - startTime) / 1000;
-                        const currentMbps = (totalBytes * 8) / elapsed / 1_000_000;
-                        updateGauge(currentMbps, 500); // Usually upload is slower
-                        lastUpdate = now;
-                    }
-                } catch (e) {
-                    // Even if it 404s, the data was sent
-                    totalBytes += chunkSize;
+                    const reporter = setInterval(() => {
+                        const elapsed = (performance.now() - startTime) / 1000;
+                        const mbps = (totalBytes * 8) / elapsed / 1_000_000;
+                        self.postMessage({ type: 'progress', mbps });
+                    }, 100);
+
+                    await Promise.all(Array(streams).fill(0).map(runStream));
+                    clearInterval(reporter);
+                    const finalElapsed = (performance.now() - startTime) / 1000;
+                    self.postMessage({ type: 'downloadResult', mbps: (totalBytes * 8) / finalElapsed / 1_000_000 });
                 }
-            }
 
-            const finalElapsed = (performance.now() - startTime) / 1000;
-            return (totalBytes * 8) / finalElapsed / 1_000_000;
-        }
+                if (type === 'upload') {
+                    const streams = 3;
+                    let totalBytes = 0;
+                    const startTime = performance.now();
+                    const chunk = new Uint8Array(1024 * 512);
+                    crypto.getRandomValues(chunk);
 
-        startBtn.addEventListener('click', async () => {
+                    const runStream = async () => {
+                        while (performance.now() - startTime < duration) {
+                            try {
+                                await fetch(url + '?_u=' + Date.now(), {
+                                    method: 'POST',
+                                    body: chunk,
+                                    cache: 'no-store',
+                                    mode: 'no-cors'
+                                });
+                                totalBytes += chunk.length;
+                            } catch (e) {
+                                totalBytes += chunk.length;
+                            }
+                        }
+                    };
+
+                    const reporter = setInterval(() => {
+                        const elapsed = (performance.now() - startTime) / 1000;
+                        const mbps = (totalBytes * 8) / elapsed / 1_000_000;
+                        self.postMessage({ type: 'progress', mbps });
+                    }, 100);
+
+                    await Promise.all(Array(streams).fill(0).map(runStream));
+                    clearInterval(reporter);
+                    const finalElapsed = (performance.now() - startTime) / 1000;
+                    self.postMessage({ type: 'uploadResult', mbps: (totalBytes * 8) / finalElapsed / 1_000_000 });
+                }
+            };
+        `;
+
+        const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+        const workerUrl = URL.createObjectURL(workerBlob);
+        let worker = new Worker(workerUrl);
+
+        startBtn.addEventListener('click', () => {
             startBtn.disabled = true;
             startBtn.classList.add('testing');
             startBtn.textContent = "Testing...";
             
-            // Reset UI
             pingEl.textContent = "-";
             jitterEl.textContent = "-";
             downloadEl.textContent = "-";
             uploadEl.textContent = "-";
             updateGauge(0);
-
-            // 1. Ping
             verdictText.textContent = "Checking Latency...";
-            const { ping, jitter } = await runPingTest();
-            pingEl.textContent = `${ping.toFixed(1)} ms`;
-            jitterEl.textContent = `${jitter.toFixed(1)} ms`;
 
-            // 2. Download
-            verdictText.textContent = "Measuring Download...";
-            const dlSpeed = await runDownloadTest();
-            downloadEl.textContent = `${dlSpeed.toFixed(1)} Mbps`;
-            updateGauge(dlSpeed, 1000);
-            setVerdict(dlSpeed);
+            worker.terminate();
+            worker = new Worker(workerUrl);
 
-            // 3. Upload
-            verdictText.textContent = "Measuring Upload...";
-            const ulSpeed = await runUploadTest();
-            uploadEl.textContent = `${ulSpeed.toFixed(1)} Mbps`;
-            updateGauge(ulSpeed, 500);
+            worker.onmessage = (e) => {
+                const { type, mbps, times } = e.data;
 
-            // Done
-            verdictText.textContent = "Test Complete";
-            startBtn.disabled = false;
-            startBtn.classList.remove('testing');
-            startBtn.textContent = "Run Again";
+                if (type === 'pingResult') {
+                    const sorted = [...times].sort((a, b) => a - b);
+                    const middle = sorted.slice(2, -2);
+                    const avgPing = middle.reduce((a, b) => a + b, 0) / middle.length;
+                    const mean = times.reduce((a, b) => a + b, 0) / times.length;
+                    const jitter = Math.sqrt(times.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / times.length);
+                    
+                    pingEl.textContent = `${avgPing.toFixed(1)} ms`;
+                    jitterEl.textContent = `${jitter.toFixed(1)} ms`;
+                    
+                    verdictText.textContent = "Measuring Download...";
+                    worker.postMessage({ type: 'download', url: '/speedtest/25mb.bin', duration: 5000 });
+                }
+
+                if (type === 'progress') {
+                    updateGauge(mbps, 1000);
+                }
+
+                if (type === 'downloadResult') {
+                    downloadEl.textContent = `${mbps.toFixed(1)} Mbps`;
+                    updateGauge(mbps, 1000);
+                    setVerdict(mbps);
+                    verdictText.textContent = "Measuring Upload...";
+                    worker.postMessage({ type: 'upload', url: window.location.href, duration: 5000 });
+                }
+
+                if (type === 'uploadResult') {
+                    uploadEl.textContent = `${mbps.toFixed(1)} Mbps`;
+                    updateGauge(mbps, 500);
+                    verdictText.textContent = "Test Complete";
+                    startBtn.disabled = false;
+                    startBtn.classList.remove('testing');
+                    startBtn.textContent = "Run Again";
+                }
+            };
+
+            worker.postMessage({ type: 'ping', url: window.location.href });
         });
     </script>
+
 
 </body>
 </html>
