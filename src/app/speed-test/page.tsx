@@ -33,8 +33,8 @@ export default function SpeedTestPage() {
     
     // Fallback strategy: Try multiple endpoints if one fails (Netlify routing resilience)
     const endpoints = [
-      `/api/ping`,                 // Primary: New lightweight endpoint
-      `/favicon.ico`,              // Fallback 1: Static asset (guaranteed to exist and route)
+      `/favicon.ico`,              // Primary: Static asset (served from CDN edge for accurate latency)
+      `/api/ping`,                 // Fallback 1: Lightweight Edge API
       `/api/speedtest?ping=true`   // Fallback 2: Old endpoint
     ];
 
