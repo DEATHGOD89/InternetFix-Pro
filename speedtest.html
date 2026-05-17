@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Speed Test Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #050505;
+            --card-bg: rgba(15, 15, 20, 0.7);
+            --text-main: #ffffff;
+            --text-dim: #a0a0a0;
+            --accent-cyan: #00f2ff;
+            --accent-magenta: #ff00ea;
+            --glow-cyan: 0 0 15px rgba(0, 242, 255, 0.5);
+            --glow-magenta: 0 0 15px rgba(255, 0, 234, 0.5);
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg-color: #f0f0f5;
+                --card-bg: rgba(255, 255, 255, 0.8);
+                --text-main: #1a1a1a;
+                --text-dim: #666666;
+            }
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        .dashboard {
+            width: 90%;
+            max-width: 450px;
+            padding: 2.5rem;
+            border-radius: 24px;
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+            text-align: center;
+            position: relative;
+        }
+
+        .dashboard::before {
+            content: '';
+            position: absolute;
+            top: -2px;
+            left: -2px;
+            right: -2px;
+            bottom: -2px;
+            background: linear-gradient(45deg, var(--accent-cyan), var(--accent-magenta));
+            border-radius: 26px;
+            z-index: -1;
+            opacity: 0.2;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 2rem;
+            letter-spacing: -0.02em;
+            text-transform: uppercase;
+            background: linear-gradient(to right, var(--accent-cyan), var(--accent-magenta));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .gauge-container {
+            position: relative;
+            width: 240px;
+            height: 240px;
+            margin: 0 auto 2rem;
+        }
+
+        .gauge-svg {
+            transform: rotate(-90deg);
+        }
+
+        .gauge-bg {
+            fill: none;
+            stroke: rgba(255, 255, 255, 0.05);
+            stroke-width: 8;
+        }
+
+        .gauge-progress {
+            fill: none;
+            stroke: var(--accent-cyan);
+            stroke-width: 8;
+            stroke-linecap: round;
+            stroke-dasharray: 628; /* 2 * PI * 100 */
+            stroke-dashoffset: 628;
+            transition: stroke-dashoffset 0.5s ease;
+            filter: drop-shadow(var(--glow-cyan));
+        }
+
+        .gauge-value {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+        }
+
+        .speed-number {
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1;
+        }
+
+        .speed-unit {
+            font-size: 0.875rem;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .metric-card {
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .metric-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+        }
+
+        .metric-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .verdict {
+            font-size: 1rem;
+            font-weight: 500;
+            margin-bottom: 2rem;
+            min-height: 1.5em;
+            color: var(--accent-cyan);
+        }
+
+        .btn-start {
+            background: transparent;
+            border: 2px solid var(--accent-cyan);
+            color: var(--accent-cyan);
+            padding: 1rem 3rem;
+            border-radius: 50px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            box-shadow: var(--glow-cyan);
+        }
+
+        .btn-start:hover {
+            background: var(--accent-cyan);
+            color: #000;
+            box-shadow: 0 0 30px rgba(0, 242, 255, 0.8);
+        }
+
+        .btn-start:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+
+        .disclaimer {
+            margin-top: 2rem;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            line-height: 1.4;
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.6; }
+            100% { opacity: 1; }
+        }
+
+        .testing {
+            animation: pulse 1.5s infinite ease-in-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <h1>Network Pulse</h1>
+        
+        <div class="gauge-container">
+            <svg class="gauge-svg" width="240" height="240" viewBox="0 0 220 220">
+                <circle class="gauge-bg" cx="110" cy="110" r="100"></circle>
+                <circle id="progressCircle" class="gauge-progress" cx="110" cy="110" r="100"></circle>
+            </svg>
+            <div class="gauge-value">
+                <div id="mainSpeed" class="speed-number">0</div>
+                <div class="speed-unit">Mbps</div>
+            </div>
+        </div>
+
+        <div id="verdictText" class="verdict">Ready to test</div>
+
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-label">Ping</div>
+                <div id="pingValue" class="metric-value">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Jitter</div>
+                <div id="jitterValue" class="metric-value">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Download</div>
+                <div id="downloadValue" class="metric-value">-</div>
+            </div>
+            <div class="metric-card">
+                <div class="metric-label">Upload</div>
+                <div id="uploadValue" class="metric-value">-</div>
+            </div>
+        </div>
+
+        <button id="startBtn" class="btn-start">Start Test</button>
+
+        <p class="disclaimer">
+            Results reflect in-browser transfer speed, not your ISP speed.<br>
+            Tests are performed using local memory and dummy requests.
+        </p>
+    </div>
+
+    <script>
+        const startBtn = document.getElementById('startBtn');
+        const mainSpeed = document.getElementById('mainSpeed');
+        const progressCircle = document.getElementById('progressCircle');
+        const verdictText = document.getElementById('verdictText');
+        const pingEl = document.getElementById('pingValue');
+        const jitterEl = document.getElementById('jitterValue');
+        const downloadEl = document.getElementById('downloadValue');
+        const uploadEl = document.getElementById('uploadValue');
+
+        const CIRCUMFERENCE = 2 * Math.PI * 100;
+
+        function updateGauge(value, max = 1000) {
+            const percent = Math.min(value / max, 1);
+            const offset = CIRCUMFERENCE - (percent * CIRCUMFERENCE);
+            progressCircle.style.strokeDashoffset = offset;
+            mainSpeed.textContent = value.toFixed(value < 10 ? 1 : 0);
+        }
+
+        function setVerdict(mbps) {
+            if (mbps < 25) verdictText.textContent = "Basic browsing & SD video";
+            else if (mbps < 100) verdictText.textContent = "Good for HD streaming & video calls";
+            else if (mbps < 500) verdictText.textContent = "Fast — handles multiple 4K streams";
+            else verdictText.textContent = "Excellent — fiber-tier speed";
+        }
+
+        async function runPingTest() {
+            const times = [];
+            for (let i = 0; i < 5; i++) {
+                const start = performance.now();
+                try {
+                    await fetch(`${window.location.href}?_ping=${Date.now()}`, { 
+                        method: 'HEAD', 
+                        cache: 'no-store',
+                        mode: 'no-cors'
+                    });
+                    times.push(performance.now() - start);
+                } catch (e) {
+                    times.push(performance.now() - start);
+                }
+            }
+
+            // Ping: average middle 3
+            const sorted = [...times].sort((a, b) => a - b);
+            const middle3 = sorted.slice(1, 4);
+            const avgPing = middle3.reduce((a, b) => a + b, 0) / 3;
+
+            // Jitter: std-dev of all 5
+            const mean = times.reduce((a, b) => a + b, 0) / 5;
+            const variance = times.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / 5;
+            const jitter = Math.sqrt(variance);
+
+            return { ping: avgPing, jitter: jitter };
+        }
+
+        async function runDownloadTest() {
+            const results = [];
+            const sizes = [1024 * 1024 * 1, 1024 * 1024 * 5, 1024 * 1024 * 10]; // 1MB, 5MB, 10MB
+
+            for (let i = 0; i < 3; i++) {
+                const size = sizes[i];
+                const data = new Uint8Array(size);
+                crypto.getRandomValues(data);
+                const blob = new Blob([data], { type: 'application/octet-stream' });
+                const url = URL.createObjectURL(blob);
+
+                const start = performance.now();
+                const response = await fetch(url, { cache: 'no-store' });
+                await response.blob();
+                const end = performance.now();
+                
+                URL.revokeObjectURL(url);
+
+                const seconds = (end - start) / 1000;
+                const mbps = (size * 8) / seconds / 1_000_000;
+                results.push(mbps);
+                updateGauge(mbps, 1000);
+            }
+
+            results.sort((a, b) => a - b);
+            return results[1]; // Median
+        }
+
+        async function runUploadTest() {
+            const size = 1024 * 1024 * 2; // 2MB
+            const data = new Uint8Array(size);
+            crypto.getRandomValues(data);
+
+            const start = performance.now();
+            try {
+                await fetch(`${window.location.href}?_upload=${Date.now()}`, {
+                    method: 'POST',
+                    body: data,
+                    cache: 'no-store',
+                    mode: 'no-cors'
+                });
+            } catch (e) {
+                // Ignore error, we only care about the time to send
+            }
+            const end = performance.now();
+
+            const seconds = (end - start) / 1000;
+            return (size * 8) / seconds / 1_000_000;
+        }
+
+        startBtn.addEventListener('click', async () => {
+            startBtn.disabled = true;
+            startBtn.classList.add('testing');
+            verdictText.textContent = "Testing Ping...";
+            
+            // Reset UI
+            pingEl.textContent = "-";
+            jitterEl.textContent = "-";
+            downloadEl.textContent = "-";
+            uploadEl.textContent = "-";
+            updateGauge(0);
+
+            // 1. Ping
+            const { ping, jitter } = await runPingTest();
+            pingEl.textContent = `${ping.toFixed(1)} ms`;
+            jitterEl.textContent = `${jitter.toFixed(1)} ms`;
+
+            // 2. Download
+            verdictText.textContent = "Testing Download...";
+            const dlSpeed = await runDownloadTest();
+            downloadEl.textContent = `${dlSpeed.toFixed(1)} Mbps`;
+            updateGauge(dlSpeed, 1000);
+            setVerdict(dlSpeed);
+
+            // 3. Upload
+            verdictText.textContent = "Testing Upload...";
+            const ulSpeed = await runUploadTest();
+            uploadEl.textContent = `${ulSpeed.toFixed(1)} Mbps`;
+
+            // Done
+            startBtn.disabled = false;
+            startBtn.classList.remove('testing');
+            startBtn.textContent = "Run Again";
+        });
+    </script>
+</body>
+</html>
