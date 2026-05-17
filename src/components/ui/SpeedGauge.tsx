@@ -1,7 +1,7 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { useEffect, useState } from "react";
+import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
+import { useEffect, useRef } from "react";
 
 interface SpeedGaugeProps {
   value: number;
@@ -14,78 +14,137 @@ interface SpeedGaugeProps {
 
 export function SpeedGauge({ 
   value, 
-  max = 1000, 
+  max = 100, 
   label, 
   unit, 
   color = "cyan",
   isTesting = false
 }: SpeedGaugeProps) {
-  const [displayValue, setDisplayValue] = useState(0);
+  // Dynamically scale max if value exceeds it (e.g., jump to 200, 500, 1000)
+  const currentMax = Math.max(max, Math.ceil(value / 50) * 50);
+
+  // Framer Motion values for buttery smooth 60fps animations
+  const rawValue = useMotionValue(0);
+  const smoothValue = useSpring(rawValue, {
+    damping: 30,
+    stiffness: 150,
+    mass: 0.8
+  });
 
   useEffect(() => {
-    setDisplayValue(value);
-  }, [value]);
+    // Whenever the React state updates, feed it into the motion value
+    rawValue.set(value);
+  }, [value, rawValue]);
 
-  const radius = 120;
-  const circumference = 2 * Math.random() * Math.PI * radius; // Dummy, we use specific SVG math below
-  const strokeDasharray = `${2 * Math.PI * radius}`;
-  const percentage = (displayValue / max) * 100;
-  // Map percentage (0-100) to a semi-circle angle offset
-  const strokeDashoffset = ((100 - (percentage * 0.75)) / 100) * (2 * Math.PI * radius);
+  const radius = 110;
+  const circumference = 2 * Math.PI * radius;
+  // We want the gauge to span 270 degrees (75% of the circle)
+  const arcLength = circumference * 0.75;
+  
+  // Map smoothValue (0 -> currentMax) to strokeDashoffset (circumference -> circumference - arcLength)
+  const strokeDashoffset = useTransform(
+    smoothValue, 
+    [0, currentMax], 
+    [circumference, circumference - arcLength],
+    { clamp: true }
+  );
+
+  // Map smoothValue to Needle Rotation (-135deg to +135deg)
+  const needleRotation = useTransform(
+    smoothValue, 
+    [0, currentMax], 
+    [-135, 135],
+    { clamp: true }
+  );
+
+  const numRef = useRef<HTMLDivElement>(null);
+
+  // Directly mutate the DOM node for the number counter (bypasses React render cycle for performance)
+  useEffect(() => {
+    const unsubscribe = smoothValue.on("change", (latest) => {
+      if (numRef.current) {
+        numRef.current.textContent = latest.toFixed(1);
+      }
+    });
+    return () => unsubscribe();
+  }, [smoothValue]);
 
   const colors = {
-    cyan: "text-neon-cyan stroke-neon-cyan drop-shadow-[0_0_8px_rgba(6,182,212,0.8)]",
-    blue: "text-neon-blue stroke-neon-blue drop-shadow-[0_0_8px_rgba(59,130,246,0.8)]",
-    green: "text-green-400 stroke-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.8)]"
+    cyan: {
+        stroke: "stroke-cyan-400 text-cyan-400 drop-shadow-[0_0_10px_rgba(34,211,238,0.8)]",
+        needle: "fill-cyan-400"
+    },
+    blue: {
+        stroke: "stroke-blue-500 text-blue-500 drop-shadow-[0_0_10px_rgba(59,130,246,0.8)]",
+        needle: "fill-blue-500"
+    },
+    green: {
+        stroke: "stroke-green-400 text-green-400 drop-shadow-[0_0_10px_rgba(74,222,128,0.8)]",
+        needle: "fill-green-400"
+    }
   };
 
+  const theme = colors[color];
+
   return (
-    <div className="relative flex flex-col items-center justify-center">
-      <div className="relative w-64 h-64">
-        {/* Background Track */}
-        <svg className="w-full h-full transform -rotate-135" viewBox="0 0 280 280">
+    <div className={`relative flex flex-col items-center justify-center transition-all duration-500 ease-out ${isTesting ? "opacity-100 scale-105" : "opacity-75 scale-100 grayscale-[20%]"}`}>
+      <div className="relative w-64 h-64 flex items-center justify-center">
+        
+        {/* Glow behind the gauge when active */}
+        {isTesting && (
+            <div className={`absolute inset-0 rounded-full blur-3xl opacity-20 ${theme.stroke.split(' ')[0].replace('stroke', 'bg')}`}></div>
+        )}
+
+        {/* SVG Container */}
+        <svg className="absolute w-full h-full transform -rotate-135" viewBox="0 0 260 260">
+          {/* Background Track */}
           <circle
-            cx="140"
-            cy="140"
+            cx="130"
+            cy="130"
             r={radius}
             fill="transparent"
             stroke="rgba(255,255,255,0.05)"
             strokeWidth="16"
-            strokeDasharray={strokeDasharray}
-            strokeDashoffset={2 * Math.PI * radius * 0.25} // 75% of circle
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * 0.25} // Hides 25% to make a 270deg arc
             strokeLinecap="round"
           />
-          {/* Active Progress */}
+          {/* Active Animated Progress Ring */}
           <motion.circle
-            cx="140"
-            cy="140"
+            cx="130"
+            cy="130"
             r={radius}
             fill="transparent"
             stroke="currentColor"
             strokeWidth="16"
-            strokeDasharray={strokeDasharray}
-            initial={{ strokeDashoffset: 2 * Math.PI * radius }}
-            animate={{ strokeDashoffset: strokeDashoffset }}
-            transition={{ duration: 0.5, ease: "easeOut" }}
+            strokeDasharray={circumference}
+            style={{ strokeDashoffset }}
             strokeLinecap="round"
-            className={colors[color]}
+            className={theme.stroke}
           />
         </svg>
 
-        {/* Center Text */}
-        <div className="absolute inset-0 flex flex-col items-center justify-center pb-8">
-          <motion.div 
-            className="text-5xl font-black text-white tracking-tighter"
-            animate={{ scale: isTesting ? [1, 1.05, 1] : 1 }}
-            transition={{ repeat: isTesting ? Infinity : 0, duration: 0.5 }}
-          >
-            {Math.round(displayValue)}
-          </motion.div>
-          <div className="text-gray-400 text-sm font-medium uppercase tracking-widest">{unit}</div>
+        {/* Needle */}
+        <motion.div 
+            className="absolute w-full h-full pointer-events-none origin-center z-10"
+            style={{ rotate: needleRotation }}
+        >
+            <svg viewBox="0 0 260 260" className="w-full h-full">
+                <polygon points="126,130 134,130 130,30" className={theme.needle} />
+                <circle cx="130" cy="130" r="8" className={theme.needle} />
+            </svg>
+        </motion.div>
+
+        {/* Center Text Container */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pt-8 pb-4">
+          <div className={`text-5xl font-black tracking-tighter ${theme.stroke.split(' ')[1]}`} ref={numRef}>
+            0.0
+          </div>
+          <div className="text-gray-400 text-sm font-medium uppercase tracking-widest mt-1">{unit}</div>
         </div>
       </div>
       
-      <div className="mt-[-2rem] text-xl font-bold text-gray-300">{label}</div>
+      <div className="mt-[-1rem] text-xl font-bold text-gray-200 uppercase tracking-widest">{label}</div>
     </div>
   );
 }

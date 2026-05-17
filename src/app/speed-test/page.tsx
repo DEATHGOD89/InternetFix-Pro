@@ -4,313 +4,373 @@ import { useState, useEffect, useRef } from "react";
 import { SpeedGauge } from "@/components/ui/SpeedGauge";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { NeonButton } from "@/components/ui/NeonButton";
-import { Activity, Server, Shield, Zap, TrendingUp } from "lucide-react";
+import { Activity, Server, Shield, Zap, TrendingUp, Wifi, MonitorPlay, Gamepad2, AlertTriangle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
-type TestState = "idle" | "probing" | "pinging" | "downloading" | "uploading" | "finished" | "error";
+type TestState = "idle" | "pinging" | "downloading" | "uploading" | "finished" | "error";
 
 export default function SpeedTestPage() {
   const [testState, setTestState] = useState<TestState>("idle");
   const [ping, setPing] = useState(0);
+  const [jitter, setJitter] = useState(0);
   const [download, setDownload] = useState(0);
   const [upload, setUpload] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Prevent memory leaks on unmount
   useEffect(() => {
     return () => {
-      if (abortControllerRef.current) abortControllerRef.current.abort();
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
-  const measurePing = async () => {
+  const measurePingAndJitter = async () => {
     const pings: number[] = [];
-    for (let i = 0; i < 5; i++) {
-      const start = performance.now();
-      try {
-        const res = await fetch(`/api/speedtest?ping=true&t=${Math.random()}`, { method: 'HEAD', cache: 'no-store' });
-        if (!res.ok) throw new Error("Server unreachable");
-        pings.push(performance.now() - start);
-      } catch (e) { throw e; }
-      await new Promise(r => setTimeout(r, 100));
-    }
-    const avg = pings.reduce((a, b) => a + b, 0) / pings.length;
-    setPing(Math.round(avg));
-    return avg;
-  };
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-  /**
-   * PROBE: A quick 1.5s test to warm up connection.
-   */
-  const probeBandwidth = async (): Promise<number> => {
-    console.log("--- PROBING BANDWIDTH ---");
-    const start = performance.now();
-    let bytes = 0;
     try {
-        const response = await fetch(`/api/speedtest?size=${50 * 1024 * 1024}&probe=true`, { cache: 'no-store' });
-        const reader = response.body?.getReader();
-        if (!reader) return 10;
+      for (let i = 0; i < 10; i++) {
+        const start = performance.now();
+        // Use a cache-busting timestamp
+        const res = await fetch(`/api/speedtest?ping=true&cb=${Date.now()}_${i}`, { 
+            method: 'HEAD', 
+            cache: 'no-store',
+            signal: controller.signal
+        });
+        if (!res.ok) throw new Error("Ping failed");
         
-        const timeout = setTimeout(() => reader.cancel(), 1500);
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            bytes += value.byteLength;
-        }
-        clearTimeout(timeout);
-    } catch(e) {}
-    const elapsed = (performance.now() - start) / 1000;
-    const mbps = (bytes * 8) / elapsed / 1000000;
-    console.log(`Probe Result: ~${mbps.toFixed(2)} Mbps`);
-    return mbps;
+        pings.push(performance.now() - start);
+        // Short pause between pings
+        await new Promise(r => setTimeout(r, 50));
+      }
+      clearTimeout(timeoutId);
+    } catch (e: any) {
+      clearTimeout(timeoutId);
+      throw new Error(e.name === 'AbortError' ? "Ping timeout" : "Ping endpoint unreachable");
+    }
+
+    if (pings.length === 0) throw new Error("No ping data received");
+
+    // Calculate Average Ping
+    const avgPing = pings.reduce((a, b) => a + b, 0) / pings.length;
+    
+    // Calculate Jitter (average absolute difference between consecutive pings)
+    let totalJitter = 0;
+    for (let i = 1; i < pings.length; i++) {
+        totalJitter += Math.abs(pings[i] - pings[i-1]);
+    }
+    const avgJitter = pings.length > 1 ? totalJitter / (pings.length - 1) : 0;
+
+    setPing(Math.round(avgPing));
+    setJitter(Math.round(avgJitter * 10) / 10);
   };
 
   const measureDownload = async () => {
-    console.log("--- DOWNLOAD START (TIME-LIMITED) ---");
-    // Request a very large payload so the stream naturally outlasts our 10-second limit
-    const payloadPerStream = 250 * 1024 * 1024; 
+    const DURATION_MS = 10000;
     const streams = 4;
+    // Massive payload to ensure we don't finish before 10s
+    const payloadPerStream = 300 * 1024 * 1024; 
     let totalBytes = 0;
-    const startTime = performance.now();
-    const DURATION_MS = 10000; // 10 seconds max duration
-
+    
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
+    const startTime = performance.now();
+
     const runStream = async (id: number) => {
         try {
-            const res = await fetch(`/api/speedtest?size=${payloadPerStream}&s=${id}&t=${Math.random()}`, { 
+            const res = await fetch(`/api/speedtest?size=${payloadPerStream}&s=${id}&cb=${Date.now()}`, { 
                 cache: "no-store",
                 signal: abortController.signal
             });
-            if (!res.ok) throw new Error("Download stream failed");
+            if (!res.ok) return;
             const reader = res.body!.getReader();
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
                 totalBytes += value.byteLength;
             }
-        } catch (e: any) {
-            if (e.name !== 'AbortError') {
-                console.error("Stream error:", e);
-            }
-        }
+        } catch (e: any) {}
     };
 
-    const streamPromises = Array.from({length: streams}).map((_, i) => runStream(i));
+    // Start all fetch streams
+    Array.from({length: streams}).forEach((_, i) => runStream(i));
 
-    return new Promise<number>((resolve) => {
-        let lastBytes = 0;
-        let lastTime = performance.now();
-
+    return new Promise<void>((resolve) => {
         const interval = setInterval(() => {
             const now = performance.now();
-            const elapsedSinceLast = (now - lastTime) / 1000;
-            const bytesSinceLast = totalBytes - lastBytes;
+            const elapsed = (now - startTime) / 1000;
 
-            if (elapsedSinceLast > 0) {
-                const currentMbps = (bytesSinceLast * 8) / elapsedSinceLast / 1000000;
-                if (currentMbps > 0) {
-                    setDownload(currentMbps);
-                }
+            // Update live UI (Total Bytes / Total Elapsed Time)
+            if (elapsed > 0.1) {
+                const currentMbps = (totalBytes * 8) / elapsed / 1000000;
+                setDownload(currentMbps);
             }
-            lastBytes = totalBytes;
-            lastTime = now;
 
-            // Check if duration exceeded
+            // Stop condition
             if (now - startTime >= DURATION_MS) {
                 clearInterval(interval);
-                abortController.abort(); // Stop all streams
-                
-                const finalTime = (now - startTime) / 1000;
+                abortController.abort(); // Sever connections
+
+                const finalTime = (performance.now() - startTime) / 1000;
                 const finalMbps = (totalBytes * 8) / finalTime / 1000000;
                 
-                console.log(`FINAL DL: ${totalBytes} bytes in ${finalTime.toFixed(2)}s = ${finalMbps.toFixed(2)} Mbps`);
-                
                 setDownload(finalMbps);
-                resolve(finalMbps);
+                console.log(`[DL] Total: ${(totalBytes/1024/1024).toFixed(2)} MB in ${finalTime.toFixed(2)}s -> ${finalMbps.toFixed(2)} Mbps`);
+                resolve();
             }
-        }, 200);
-
-        // If streams somehow finish before 10s
-        Promise.all(streamPromises).then(() => {
-            if (performance.now() - startTime < DURATION_MS) {
-                clearInterval(interval);
-                const finalTime = (performance.now() - startTime) / 1000;
-                // Prevent division by very small numbers
-                const safeFinalTime = Math.max(0.1, finalTime);
-                const finalMbps = (totalBytes * 8) / safeFinalTime / 1000000;
-                setDownload(finalMbps);
-                resolve(finalMbps);
-            }
-        });
+        }, 100);
     });
   };
 
   const measureUpload = async () => {
-    console.log("--- UPLOAD START (TIME-LIMITED) ---");
-    const payloadPerStream = 50 * 1024 * 1024; // 50MB per stream
-    
-    // Generate data once
+    const DURATION_MS = 10000;
+    const streams = 4;
+    const payloadPerStream = 50 * 1024 * 1024; 
+
+    // Generate random blob
     const data = new Uint8Array(payloadPerStream);
     const quota = 65536;
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-      for (let i = 0; i < data.length; i += quota) {
-        crypto.getRandomValues(data.subarray(i, Math.min(i + quota, data.length)));
-      }
+        for (let i = 0; i < data.length; i += quota) {
+            crypto.getRandomValues(data.subarray(i, Math.min(i + quota, data.length)));
+        }
     }
     const blob = new Blob([data]);
 
-    const streams = 4;
     let totalBytesLoaded = 0;
-    const startTime = performance.now();
-    const DURATION_MS = 10000;
-
     const xhrList: XMLHttpRequest[] = [];
+    const startTime = performance.now();
 
     const runStream = (id: number) => {
-        return new Promise<void>((resolve) => {
-            const xhr = new XMLHttpRequest();
-            xhrList.push(xhr);
-            xhr.open('POST', `/api/speedtest?s=${id}&t=${Math.random()}`, true);
-            let lastLoaded = 0;
-            xhr.upload.onprogress = (e) => {
-                if (e.lengthComputable) {
-                    totalBytesLoaded += (e.loaded - lastLoaded);
-                    lastLoaded = e.loaded;
-                }
-            };
-            xhr.onload = () => resolve();
-            xhr.onerror = () => resolve(); // Ignore abort errors
-            xhr.onabort = () => resolve();
-            xhr.send(blob);
-        });
-    }
+        const xhr = new XMLHttpRequest();
+        xhrList.push(xhr);
+        xhr.open('POST', `/api/speedtest?s=${id}&cb=${Date.now()}`, true);
+        
+        let lastLoaded = 0;
+        xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+                totalBytesLoaded += (e.loaded - lastLoaded);
+                lastLoaded = e.loaded;
+            }
+        };
+        xhr.onerror = () => {};
+        xhr.send(blob);
+    };
 
-    const streamPromises = Array.from({length: streams}).map((_, i) => runStream(i));
+    // Start all XHR uploads
+    Array.from({length: streams}).forEach((_, i) => runStream(i));
 
-    return new Promise<number>((resolve) => {
-        let lastBytes = 0;
-        let lastTime = performance.now();
-
+    return new Promise<void>((resolve) => {
         const interval = setInterval(() => {
             const now = performance.now();
-            const elapsedSinceLast = (now - lastTime) / 1000;
-            const bytesSinceLast = totalBytesLoaded - lastBytes;
+            const elapsed = (now - startTime) / 1000;
 
-            if (elapsedSinceLast > 0) {
-                const currentMbps = (bytesSinceLast * 8) / elapsedSinceLast / 1000000;
-                if (currentMbps > 0) setUpload(currentMbps);
+            if (elapsed > 0.1) {
+                const currentMbps = (totalBytesLoaded * 8) / elapsed / 1000000;
+                setUpload(currentMbps);
             }
-            lastBytes = totalBytesLoaded;
-            lastTime = now;
 
             if (now - startTime >= DURATION_MS) {
                 clearInterval(interval);
-                xhrList.forEach(xhr => xhr.abort());
-                
-                const finalTime = (now - startTime) / 1000;
-                const finalMbps = (totalBytesLoaded * 8) / finalTime / 1000000;
-                console.log(`FINAL UL: ${totalBytesLoaded} bytes in ${finalTime.toFixed(2)}s = ${finalMbps.toFixed(2)} Mbps`);
-                setUpload(finalMbps);
-                resolve(finalMbps);
-            }
-        }, 200);
+                xhrList.forEach(x => x.abort());
 
-        Promise.all(streamPromises).then(() => {
-            if (performance.now() - startTime < DURATION_MS) {
-                clearInterval(interval);
                 const finalTime = (performance.now() - startTime) / 1000;
-                const safeFinalTime = Math.max(0.1, finalTime);
-                const finalMbps = (totalBytesLoaded * 8) / safeFinalTime / 1000000;
+                const finalMbps = (totalBytesLoaded * 8) / finalTime / 1000000;
+                
                 setUpload(finalMbps);
-                resolve(finalMbps);
+                console.log(`[UL] Total: ${(totalBytesLoaded/1024/1024).toFixed(2)} MB in ${finalTime.toFixed(2)}s -> ${finalMbps.toFixed(2)} Mbps`);
+                resolve();
             }
-        });
+        }, 100);
     });
   };
 
   const startTest = async () => {
-    setError(null); setPing(0); setDownload(0); setUpload(0);
+    if (!navigator.onLine) {
+        setErrorMsg("Your browser is offline. Please check your connection.");
+        setTestState("error");
+        return;
+    }
+
+    setErrorMsg(null); 
+    setPing(0); setJitter(0); setDownload(0); setUpload(0);
+    
     try {
-        setTestState("probing");
-        await probeBandwidth();
-        
         setTestState("pinging");
-        await measurePing();
+        console.log("--- STARTING PING ---");
+        await measurePingAndJitter();
 
         setTestState("downloading");
+        console.log("--- STARTING DOWNLOAD ---");
         await measureDownload();
 
         setTestState("uploading");
+        console.log("--- STARTING UPLOAD ---");
         await measureUpload();
 
         setTestState("finished");
-    } catch (e) {
-        setError("Test failed. Check your connection.");
+        console.log("--- TEST COMPLETE ---");
+    } catch (e: any) {
+        console.error("Speed Test Error:", e);
+        setErrorMsg(e.message || "Test failed. Ensure the server is reachable.");
         setTestState("error");
+        if (abortControllerRef.current) abortControllerRef.current.abort();
     }
   };
 
+  // Suitability calculation logic
+  const getQualityRating = () => {
+    if (download > 500 && upload > 100 && ping < 20) return { label: "Excellent", color: "text-cyan-400" };
+    if (download > 100 && upload > 20 && ping < 50) return { label: "Good", color: "text-green-400" };
+    if (download > 25 && upload > 5 && ping < 100) return { label: "Fair", color: "text-yellow-400" };
+    return { label: "Poor", color: "text-red-400" };
+  };
+
+  const getStreamingSuitability = () => {
+    if (download >= 25) return "4K UHD Ready";
+    if (download >= 5) return "1080p HD Ready";
+    return "SD Quality Only";
+  };
+
+  const getGamingSuitability = () => {
+    if (ping < 30 && jitter < 5) return "Optimal (Competitive)";
+    if (ping < 60 && jitter < 15) return "Good (Casual)";
+    return "Suboptimal (Lag Likely)";
+  };
+
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 flex flex-col items-center">
-      <div className="text-center mb-12">
-        <h1 className="text-4xl font-bold text-white flex items-center justify-center gap-3 mb-4">
-          <Zap className="h-10 w-10 text-neon-cyan" />
-          Pro Speed Engine v4
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 flex flex-col items-center min-h-screen">
+      <div className="text-center mb-8">
+        <h1 className="text-4xl md:text-5xl font-black text-white flex items-center justify-center gap-3 mb-4 tracking-tighter">
+          <Zap className="h-10 w-10 text-cyan-400 drop-shadow-[0_0_15px_rgba(34,211,238,0.6)]" />
+          Pro Speed Engine
         </h1>
         <p className="text-gray-400 text-lg max-w-2xl mx-auto">
-          Time-Limited Analysis & Edge Optimized Routing for professional-grade accuracy.
+          Industrial-grade bandwidth analysis with real-time UI coupling and extreme accuracy.
         </p>
       </div>
 
-      <GlassCard className="w-full max-w-4xl p-8 relative overflow-hidden">
-        <div className={`absolute inset-0 opacity-10 pointer-events-none bg-grid-animated ${testState !== 'idle' && testState !== 'finished' ? 'opacity-30' : ''}`} style={{
-          backgroundImage: `linear-gradient(to right, rgba(6, 182, 212, 0.2) 1px, transparent 1px), linear-gradient(to bottom, rgba(6, 182, 212, 0.2) 1px, transparent 1px)`,
+      <GlassCard className="w-full max-w-5xl p-8 md:p-12 relative overflow-hidden shadow-2xl border-white/10">
+        {/* Animated Background Grid during testing */}
+        <div className={`absolute inset-0 opacity-10 pointer-events-none transition-opacity duration-1000 ${testState === 'downloading' || testState === 'uploading' ? 'opacity-30' : ''}`} style={{
+          backgroundImage: `linear-gradient(to right, rgba(34, 211, 238, 0.2) 1px, transparent 1px), linear-gradient(to bottom, rgba(34, 211, 238, 0.2) 1px, transparent 1px)`,
           backgroundSize: '40px 40px'
         }}></div>
 
         <div className="relative z-10 flex flex-col items-center">
-          <div className="flex flex-col md:flex-row items-center justify-center gap-12 mb-12">
-            <SpeedGauge value={download} max={Math.max(100, download * 1.2)} label="Download" unit="Mbps" color="cyan" isTesting={testState === "downloading"} />
-            <SpeedGauge value={upload} max={Math.max(100, upload * 1.2)} label="Upload" unit="Mbps" color="blue" isTesting={testState === "uploading"} />
+          
+          {/* Gauges Container */}
+          <div className="flex flex-col md:flex-row items-center justify-center gap-8 md:gap-24 mb-16 w-full">
+            <SpeedGauge 
+                value={download} 
+                label="Download" 
+                unit="Mbps" 
+                color="cyan" 
+                isTesting={testState === "downloading"} 
+            />
+            <SpeedGauge 
+                value={upload} 
+                label="Upload" 
+                unit="Mbps" 
+                color="blue" 
+                isTesting={testState === "uploading"} 
+            />
           </div>
 
+          {/* Core Metrics Cards */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full mb-12">
-            <StatBox label="Ping" value={testState !== "idle" ? Math.round(ping).toString() : "-"} unit="ms" icon={<Activity className="h-4 w-4 text-green-400" />} />
-            <StatBox label="Engine" value="Edge Time-Limited" unit="" icon={<Server className="h-4 w-4 text-purple-400" />} />
-            <StatBox label="Streams" value="4 x 4" unit="" icon={<TrendingUp className="h-4 w-4 text-yellow-400" />} />
-            <StatBox label="Timing" value="Strict 10s" unit="" icon={<Shield className="h-4 w-4 text-neon-blue" />} />
+            <StatBox label="Ping" value={testState !== "idle" ? ping.toString() : "-"} unit="ms" icon={<Activity className="h-4 w-4 text-green-400" />} isActive={testState === 'pinging'} />
+            <StatBox label="Jitter" value={testState !== "idle" ? jitter.toString() : "-"} unit="ms" icon={<Wifi className="h-4 w-4 text-purple-400" />} isActive={testState === 'pinging'} />
+            <StatBox label="Engine" value="Edge HTTP" unit="" icon={<Server className="h-4 w-4 text-cyan-400" />} isActive={testState === 'downloading' || testState === 'uploading'} />
+            <StatBox label="Timing" value="Strict 10s" unit="" icon={<Shield className="h-4 w-4 text-blue-400" />} isActive={testState === 'downloading' || testState === 'uploading'} />
           </div>
 
-          <AnimatePresence mode="wait">
-            {testState === "error" ? (
-              <NeonButton size="md" variant="cyan" onClick={startTest}>Retry Test</NeonButton>
-            ) : testState === "idle" || testState === "finished" ? (
-              <NeonButton size="lg" onClick={startTest}>
-                {testState === "finished" ? "Run Diagnostic Again" : "Start Real-Time Analysis"}
-              </NeonButton>
-            ) : (
-              <div className="flex items-center gap-3 text-neon-cyan font-mono text-sm tracking-widest">
-                <div className="w-2 h-2 bg-neon-cyan rounded-full animate-ping"></div>
-                {testState.toUpperCase()}...
-              </div>
+          {/* Final Results Summary Panel */}
+          <AnimatePresence>
+            {testState === "finished" && (
+                <motion.div 
+                    initial={{ opacity: 0, y: 20 }} 
+                    animate={{ opacity: 1, y: 0 }}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl p-6 mb-12 grid grid-cols-1 md:grid-cols-3 gap-6 text-center"
+                >
+                    <div>
+                        <div className="text-gray-400 text-sm uppercase tracking-widest mb-2 flex items-center justify-center gap-2"><Zap className="h-4 w-4"/> Network Rating</div>
+                        <div className={`text-2xl font-black ${getQualityRating().color}`}>{getQualityRating().label}</div>
+                    </div>
+                    <div className="border-t md:border-t-0 md:border-l border-white/10 pt-4 md:pt-0">
+                        <div className="text-gray-400 text-sm uppercase tracking-widest mb-2 flex items-center justify-center gap-2"><MonitorPlay className="h-4 w-4"/> Streaming</div>
+                        <div className="text-xl font-bold text-white">{getStreamingSuitability()}</div>
+                    </div>
+                    <div className="border-t md:border-t-0 md:border-l border-white/10 pt-4 md:pt-0">
+                        <div className="text-gray-400 text-sm uppercase tracking-widest mb-2 flex items-center justify-center gap-2"><Gamepad2 className="h-4 w-4"/> Gaming</div>
+                        <div className="text-xl font-bold text-white">{getGamingSuitability()}</div>
+                    </div>
+                </motion.div>
             )}
           </AnimatePresence>
+
+          {/* Action Button & Status */}
+          <div className="min-h-[80px] flex items-center justify-center">
+            <AnimatePresence mode="wait">
+                {testState === "error" ? (
+                    <div className="flex flex-col items-center">
+                        <div className="flex items-center gap-2 text-red-400 font-mono mb-4 bg-red-950/30 p-3 rounded border border-red-900/50">
+                            <AlertTriangle className="h-5 w-5" /> {errorMsg}
+                        </div>
+                        <NeonButton size="md" variant="cyan" onClick={startTest}>Retry Connection</NeonButton>
+                    </div>
+                ) : testState === "idle" || testState === "finished" ? (
+                <motion.div initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.9, opacity: 0 }}>
+                    <NeonButton size="lg" onClick={startTest}>
+                        {testState === "finished" ? "Run Diagnostic Again" : "Start Global Analysis"}
+                    </NeonButton>
+                </motion.div>
+                ) : (
+                <motion.div 
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                    className="flex flex-col items-center gap-4"
+                >
+                    <div className="flex items-center gap-3 text-cyan-400 font-mono text-lg tracking-widest uppercase">
+                        <div className="relative flex h-4 w-4">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-4 w-4 bg-cyan-500"></span>
+                        </div>
+                        {testState === 'pinging' ? 'Analyzing Latency...' : testState === 'downloading' ? 'Testing Download...' : 'Testing Upload...'}
+                    </div>
+                    {/* Live Progress Bar indicator */}
+                    <div className="w-64 h-1 bg-white/10 rounded-full overflow-hidden">
+                        <motion.div 
+                            className="h-full bg-cyan-400"
+                            initial={{ width: "0%" }}
+                            animate={{ 
+                                width: testState === 'pinging' ? "33%" : testState === 'downloading' ? "66%" : "100%" 
+                            }}
+                            transition={{ duration: 0.5 }}
+                        />
+                    </div>
+                </motion.div>
+                )}
+            </AnimatePresence>
+          </div>
+
         </div>
       </GlassCard>
-      {error && <p className="mt-4 text-red-400 font-mono">{error}</p>}
     </div>
   );
 }
 
-function StatBox({ label, value, unit, icon }: { label: string, value: string, unit: string, icon: React.ReactNode }) {
+function StatBox({ label, value, unit, icon, isActive }: { label: string, value: string, unit: string, icon: React.ReactNode, isActive?: boolean }) {
   return (
-    <div className="bg-black/40 border border-white/10 rounded-lg p-4 flex flex-col items-center justify-center">
+    <div className={`bg-black/40 border rounded-lg p-4 flex flex-col items-center justify-center transition-all duration-300 ${isActive ? 'border-cyan-500/50 shadow-[0_0_15px_rgba(34,211,238,0.2)]' : 'border-white/10'}`}>
       <div className="flex items-center gap-2 mb-2 text-gray-400 text-xs font-medium uppercase tracking-tighter">{icon}{label}</div>
       <div className="flex items-baseline gap-1">
-        <span className="text-xl font-bold text-white">{value}</span>
+        <span className={`text-2xl font-bold transition-colors duration-300 ${isActive ? 'text-cyan-400' : 'text-white'}`}>{value}</span>
         {unit && <span className="text-xs text-gray-500">{unit}</span>}
       </div>
     </div>
