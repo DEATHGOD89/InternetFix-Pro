@@ -29,32 +29,58 @@ export default function SpeedTestPage() {
   }, []);
 
   const measurePingAndJitter = async () => {
-    const pings: number[] = [];
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    let pings: number[] = [];
+    
+    // Fallback strategy: Try multiple endpoints if one fails (Netlify routing resilience)
+    const endpoints = [
+      `/api/ping`,                 // Primary: New lightweight endpoint
+      `/favicon.ico`,              // Fallback 1: Static asset (guaranteed to exist and route)
+      `/api/speedtest?ping=true`   // Fallback 2: Old endpoint
+    ];
 
-    try {
-      for (let i = 0; i < 10; i++) {
-        const start = performance.now();
-        // Use a cache-busting timestamp
-        const res = await fetch(`/api/speedtest?ping=true&cb=${Date.now()}_${i}`, { 
-            method: 'HEAD', 
-            cache: 'no-store',
-            signal: controller.signal
-        });
-        if (!res.ok) throw new Error("Ping failed");
+    let success = false;
+
+    for (let retry = 0; retry < endpoints.length; retry++) {
+      pings = [];
+      const endpoint = endpoints[retry];
+      console.log(`[Ping] Attempt ${retry + 1}: Testing ${endpoint}`);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000); // 6s timeout per batch
+
+      try {
+        for (let i = 0; i < 10; i++) {
+          const start = performance.now();
+          // Use a cache-busting timestamp
+          const res = await fetch(`${endpoint}?cb=${Date.now()}_${i}`, { 
+              method: 'HEAD', 
+              cache: 'no-store',
+              signal: controller.signal
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          
+          pings.push(performance.now() - start);
+          // Short pause between pings
+          await new Promise(r => setTimeout(r, 50));
+        }
+        clearTimeout(timeoutId);
         
-        pings.push(performance.now() - start);
-        // Short pause between pings
-        await new Promise(r => setTimeout(r, 50));
+        if (pings.length > 0) {
+            success = true;
+            break; // Success, exit retry loop
+        }
+      } catch (e: any) {
+        clearTimeout(timeoutId);
+        console.warn(`[Ping] Attempt ${retry + 1} (${endpoint}) failed:`, e.name === 'AbortError' ? 'Timeout' : e.message);
       }
-      clearTimeout(timeoutId);
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      throw new Error(e.name === 'AbortError' ? "Ping timeout" : "Ping endpoint unreachable");
     }
 
-    if (pings.length === 0) throw new Error("No ping data received");
+    if (!success || pings.length === 0) {
+      console.error("[Ping] All ping attempts failed. Gracefully continuing test.");
+      setPing(0);
+      setJitter(0);
+      return; // Do not throw, allow the rest of the test (DL/UL) to proceed
+    }
 
     // Calculate Average Ping
     const avgPing = pings.reduce((a, b) => a + b, 0) / pings.length;
