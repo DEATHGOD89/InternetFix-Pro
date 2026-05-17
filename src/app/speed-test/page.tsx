@@ -97,41 +97,45 @@ export default function SpeedTestPage() {
   };
 
   const measureDownload = async () => {
-    const DURATION_MS = 10000;
+    const DURATION_SEC = 10;
     const streams = 4;
-    // Massive payload to ensure we don't finish before 10s
-    const payloadPerStream = 300 * 1024 * 1024; 
     let totalBytes = 0;
-    
-    const abortController = new AbortController();
-    abortControllerRef.current = abortController;
-
     const startTime = performance.now();
 
-    const runStream = async (id: number) => {
+    const runStream = async () => {
+      while ((performance.now() - startTime) / 1000 < DURATION_SEC) {
         try {
-            const res = await fetch(`/api/speedtest?size=${payloadPerStream}&s=${id}&cb=${Date.now()}`, { 
-                cache: "no-store",
-                signal: abortController.signal
-            });
-            if (!res.ok) return;
-            const reader = res.body!.getReader();
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                totalBytes += value.byteLength;
+          // Fetch the pre-generated 25MB static file
+          const res = await fetch(`/speedtest/25mb.bin?cb=${Date.now()}_${Math.random()}`, {
+            cache: "no-store",
+          });
+          const reader = res.body?.getReader();
+          if (!reader) break;
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+
+            // Instantly cancel if we've hit our time limit
+            if ((performance.now() - startTime) / 1000 >= DURATION_SEC) {
+              reader.cancel();
+              break;
             }
-        } catch (e: any) {}
+          }
+        } catch (e) {
+          // Ignore network abort errors and loop to try again if there's still time
+        }
+      }
     };
 
-    // Start all fetch streams
-    Array.from({length: streams}).forEach((_, i) => runStream(i));
+    // Start parallel fetch streams
+    Array.from({length: streams}).forEach(() => runStream());
 
     return new Promise<void>((resolve) => {
         const interval = setInterval(() => {
-            const now = performance.now();
-            const elapsed = (now - startTime) / 1000;
-
+            const elapsed = (performance.now() - startTime) / 1000;
+            
             // Update live UI (Total Bytes / Total Elapsed Time)
             if (elapsed > 0.1) {
                 const currentMbps = (totalBytes * 8) / elapsed / 1000000;
@@ -139,10 +143,8 @@ export default function SpeedTestPage() {
             }
 
             // Stop condition
-            if (now - startTime >= DURATION_MS) {
+            if (elapsed >= DURATION_SEC) {
                 clearInterval(interval);
-                abortController.abort(); // Sever connections
-
                 const finalTime = (performance.now() - startTime) / 1000;
                 const finalMbps = (totalBytes * 8) / finalTime / 1000000;
                 
@@ -155,12 +157,11 @@ export default function SpeedTestPage() {
   };
 
   const measureUpload = async () => {
-    const DURATION_MS = 10000;
+    const DURATION_SEC = 10;
     const streams = 4;
-    const payloadPerStream = 50 * 1024 * 1024; 
-
-    // Generate random blob
-    const data = new Uint8Array(payloadPerStream);
+    // Small chunk size (2MB) continuously pushed in a loop
+    const chunkSize = 2 * 1024 * 1024; 
+    const data = new Uint8Array(chunkSize);
     const quota = 65536;
     if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
         for (let i = 0; i < data.length; i += quota) {
@@ -173,38 +174,43 @@ export default function SpeedTestPage() {
     const xhrList: XMLHttpRequest[] = [];
     const startTime = performance.now();
 
-    const runStream = (id: number) => {
-        const xhr = new XMLHttpRequest();
-        xhrList.push(xhr);
-        xhr.open('POST', `/api/speedtest?s=${id}&cb=${Date.now()}`, true);
-        
-        let lastLoaded = 0;
-        xhr.upload.onprogress = (e) => {
-            if (e.lengthComputable) {
-                totalBytesLoaded += (e.loaded - lastLoaded);
-                lastLoaded = e.loaded;
-            }
-        };
-        xhr.onerror = () => {};
-        xhr.send(blob);
+    const runStream = async () => {
+      while ((performance.now() - startTime) / 1000 < DURATION_SEC) {
+        await new Promise<void>((resolveStream) => {
+            const xhr = new XMLHttpRequest();
+            xhrList.push(xhr);
+            xhr.open('POST', `/api/upload-test?cb=${Date.now()}_${Math.random()}`, true);
+            
+            let lastLoaded = 0;
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    totalBytesLoaded += (e.loaded - lastLoaded);
+                    lastLoaded = e.loaded;
+                }
+            };
+            xhr.onload = () => resolveStream();
+            xhr.onerror = () => resolveStream();
+            xhr.onabort = () => resolveStream();
+            xhr.send(blob);
+        });
+      }
     };
 
-    // Start all XHR uploads
-    Array.from({length: streams}).forEach((_, i) => runStream(i));
+    // Start all XHR uploads continuously
+    Array.from({length: streams}).forEach(() => runStream());
 
     return new Promise<void>((resolve) => {
         const interval = setInterval(() => {
-            const now = performance.now();
-            const elapsed = (now - startTime) / 1000;
+            const elapsed = (performance.now() - startTime) / 1000;
 
             if (elapsed > 0.1) {
                 const currentMbps = (totalBytesLoaded * 8) / elapsed / 1000000;
                 setUpload(currentMbps);
             }
 
-            if (now - startTime >= DURATION_MS) {
+            if (elapsed >= DURATION_SEC) {
                 clearInterval(interval);
-                xhrList.forEach(x => x.abort());
+                xhrList.forEach(x => x.abort()); // Sever any hanging chunks
 
                 const finalTime = (performance.now() - startTime) / 1000;
                 const finalMbps = (totalBytesLoaded * 8) / finalTime / 1000000;
