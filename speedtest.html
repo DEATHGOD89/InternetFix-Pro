@@ -283,7 +283,13 @@
         // Web Worker Script (Embedded)
         const workerCode = `
             self.onmessage = async (e) => {
-                const { type, url, duration } = e.data;
+                const { type, url, duration, warmup } = e.data;
+
+                const getMedian = (arr) => {
+                    const sorted = [...arr].sort((a, b) => a - b);
+                    const mid = Math.floor(sorted.length / 2);
+                    return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+                };
 
                 if (type === 'ping') {
                     const times = [];
@@ -299,15 +305,17 @@
                 }
 
                 if (type === 'download') {
-                    const streams = 3;
+                    const streams = 4;
                     let totalBytes = 0;
                     const startTime = performance.now();
                     const samples = [];
+                    let lastBytes = 0;
+                    let lastTime = startTime;
 
                     const runStream = async () => {
                         while (performance.now() - startTime < duration) {
                             try {
-                                const response = await fetch(url + '?_d=' + Date.now() + '&s=' + Math.random(), { cache: 'no-store' });
+                                const response = await fetch(url + '?size=100000000&_d=' + Date.now(), { cache: 'no-store' });
                                 const reader = response.body.getReader();
                                 while (true) {
                                     const { done, value } = await reader.read();
@@ -323,28 +331,49 @@
                     };
 
                     const reporter = setInterval(() => {
-                        const elapsed = (performance.now() - startTime) / 1000;
-                        const mbps = (totalBytes * 8) / elapsed / 1_000_000;
-                        self.postMessage({ type: 'progress', mbps });
-                    }, 100);
+                        const now = performance.now();
+                        const elapsed = now - startTime;
+                        const deltaT = (now - lastTime) / 1000;
+                        const deltaB = totalBytes - lastBytes;
+                        
+                        const currentMbps = (deltaB * 8) / deltaT / 1_000_000;
+                        
+                        if (elapsed > warmup) {
+                            samples.push(currentMbps);
+                        }
+
+                        lastBytes = totalBytes;
+                        lastTime = now;
+                        
+                        self.postMessage({ type: 'progress', mbps: currentMbps });
+                    }, 200);
 
                     await Promise.all(Array(streams).fill(0).map(runStream));
                     clearInterval(reporter);
-                    const finalElapsed = (performance.now() - startTime) / 1000;
-                    self.postMessage({ type: 'downloadResult', mbps: (totalBytes * 8) / finalElapsed / 1_000_000 });
+                    
+                    const finalMbps = samples.length > 0 ? getMedian(samples) : 0;
+                    console.log('Download Samples:', samples);
+                    console.log('Final Download Median:', finalMbps);
+                    
+                    self.postMessage({ type: 'downloadResult', mbps: finalMbps });
                 }
 
                 if (type === 'upload') {
-                    const streams = 3;
+                    const streams = 4;
                     let totalBytes = 0;
                     const startTime = performance.now();
-                    const chunk = new Uint8Array(1024 * 512);
+                    const samples = [];
+                    let lastBytes = 0;
+                    let lastTime = startTime;
+                    
+                    // 5MB chunk for balanced overhead and throughput
+                    const chunk = new Uint8Array(1024 * 1024 * 5);
                     crypto.getRandomValues(chunk);
 
                     const runStream = async () => {
                         while (performance.now() - startTime < duration) {
                             try {
-                                await fetch(url + '?_u=' + Date.now(), {
+                                await fetch(url, {
                                     method: 'POST',
                                     body: chunk,
                                     cache: 'no-store',
@@ -358,15 +387,32 @@
                     };
 
                     const reporter = setInterval(() => {
-                        const elapsed = (performance.now() - startTime) / 1000;
-                        const mbps = (totalBytes * 8) / elapsed / 1_000_000;
-                        self.postMessage({ type: 'progress', mbps });
-                    }, 100);
+                        const now = performance.now();
+                        const elapsed = now - startTime;
+                        const deltaT = (now - lastTime) / 1000;
+                        const deltaB = totalBytes - lastBytes;
+                        
+                        const currentMbps = (deltaB * 8) / deltaT / 1_000_000;
+                        
+                        if (elapsed > warmup) {
+                            samples.push(currentMbps);
+                        }
+
+                        lastBytes = totalBytes;
+                        lastTime = now;
+                        
+                        self.postMessage({ type: 'progress', mbps: currentMbps });
+                    }, 200);
 
                     await Promise.all(Array(streams).fill(0).map(runStream));
                     clearInterval(reporter);
-                    const finalElapsed = (performance.now() - startTime) / 1000;
-                    self.postMessage({ type: 'uploadResult', mbps: (totalBytes * 8) / finalElapsed / 1_000_000 });
+                    
+                    const finalMbps = samples.length > 0 ? getMedian(samples) : 0;
+                    console.log('Upload Samples:', samples);
+                    console.log('Final Upload Median:', finalMbps);
+                    console.log('Total Uploaded Bytes:', totalBytes);
+                    
+                    self.postMessage({ type: 'uploadResult', mbps: finalMbps });
                 }
             };
         `;
@@ -404,7 +450,7 @@
                     jitterEl.textContent = `${jitter.toFixed(1)} ms`;
                     
                     verdictText.textContent = "Measuring Download...";
-                    worker.postMessage({ type: 'download', url: '/speedtest/25mb.bin', duration: 5000 });
+                    worker.postMessage({ type: 'download', url: '/api/speedtest', duration: 8000, warmup: 2000 });
                 }
 
                 if (type === 'progress') {
@@ -416,7 +462,7 @@
                     updateGauge(mbps, 1000);
                     setVerdict(mbps);
                     verdictText.textContent = "Measuring Upload...";
-                    worker.postMessage({ type: 'upload', url: window.location.href, duration: 5000 });
+                    worker.postMessage({ type: 'upload', url: '/api/speedtest', duration: 8000, warmup: 2000 });
                 }
 
                 if (type === 'uploadResult') {
@@ -429,9 +475,10 @@
                 }
             };
 
-            worker.postMessage({ type: 'ping', url: window.location.href });
+            worker.postMessage({ type: 'ping', url: '/api/ping' });
         });
     </script>
+
 
 
 </body>
